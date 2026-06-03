@@ -1,4 +1,4 @@
-// check_slots.js — Vérifie les créneaux Abaseo (semaines à venir) et envoie un mail si dispo
+// check_slots.js — Surveille créneaux Abaseo : semaine en cours + 7 jours glissants
 const https = require("https");
 
 const CONFIG = {
@@ -7,8 +7,9 @@ const CONFIG = {
   appointmentTypeId: "01940b23-277d-7107-a963-7b9074d61110",
   nextAction: "40da493497eadff4d1d9243ce4ed01e619b1945b59",
   timezone: "Europe/Paris",
-  weeksAhead: 6,
 };
+
+const BOOK_URL = "https://www.abaseo.fr/chiropracteur/44530-saint-gildas-des-bois/fanny-joly?officeId=01934e61-5a55-7221-ab1d-1ca5190d2e24";
 
 const ROUTER_STATE = encodeURIComponent(JSON.stringify(
   ["", {children: ["fr", {children: ["(abaseo)", {children: ["profession", {children: ["chiropracteur",
@@ -17,14 +18,23 @@ const ROUTER_STATE = encodeURIComponent(JSON.stringify(
   null, null]}, null, null]}, null, null]}, null, null]}, null, null]}, null, null]}]}]
 ));
 
-function getMondayISO(weeksOffset = 0) {
-  const now = new Date();
-  const day = now.getDay();
+// Retourne le lundi de la semaine contenant `date`
+function getMondayOf(date) {
+  const d = new Date(date);
+  const day = d.getDay();
   const diff = day === 0 ? -6 : 1 - day;
-  const monday = new Date(now);
-  monday.setDate(now.getDate() + diff + weeksOffset * 7);
-  monday.setUTCHours(0, 0, 0, 0);
-  return monday.toISOString();
+  d.setDate(d.getDate() + diff);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+}
+
+// Formate une date en JJ/MM/AAAA
+function formatDate(date) {
+  const d = new Date(date);
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const month = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const year = d.getUTCFullYear();
+  return day + "/" + month + "/" + year;
 }
 
 function checkSlotsForWeek(fromISO) {
@@ -48,7 +58,7 @@ function checkSlotsForWeek(fromISO) {
         "Next-Action": CONFIG.nextAction,
         "Next-Router-State-Tree": ROUTER_STATE,
         "Origin": "https://www.abaseo.fr",
-        "Referer": "https://www.abaseo.fr/chiropracteur/44530-saint-gildas-des-bois/fanny-joly?officeId=" + CONFIG.officeId,
+        "Referer": BOOK_URL,
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36",
         "Accept-Language": "fr-FR,fr;q=0.9",
         "Cache-Control": "no-cache",
@@ -70,10 +80,7 @@ function checkSlotsForWeek(fromISO) {
           const available = [];
           for (const day of parsed.availabilities || []) {
             if (day.slots && day.slots.length > 0) {
-              const dateStr = new Date(day.date).toLocaleDateString("fr-FR", {
-                weekday: "long", day: "numeric", month: "long",
-              });
-              available.push({ date: dateStr, slots: day.slots });
+              available.push({ date: day.date, slots: day.slots });
             }
           }
           resolve(available);
@@ -89,6 +96,19 @@ function checkSlotsForWeek(fromISO) {
   });
 }
 
+// Filtre pour ne garder que les créneaux dans la fenêtre [today, today+7j]
+function filterWindow(allSlots) {
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const limit = new Date(today);
+  limit.setDate(today.getDate() + 7);
+
+  return allSlots.filter((s) => {
+    const d = new Date(s.date);
+    return d >= today && d <= limit;
+  });
+}
+
 async function sendMail(slots) {
   const emailTo = process.env.NOTIFY_EMAIL;
   const resendKey = process.env.RESEND_API_KEY;
@@ -98,16 +118,31 @@ async function sendMail(slots) {
     process.exit(1);
   }
 
-  const lines = slots.map((s) => "• " + s.date + " : " + s.slots.join(", ")).join("\n");
-  const listItems = slots.map((s) => "<li><strong>" + s.date + "</strong> : " + s.slots.join(", ") + "</li>").join("");
-  const bookUrl = "https://www.abaseo.fr/chiropracteur/44530-saint-gildas-des-bois/fanny-joly?officeId=" + CONFIG.officeId;
+  // Lignes texte
+  const lines = slots.map((s) => "• " + formatDate(s.date) + " : " + s.slots.join(", ")).join("\n");
+
+  // Lignes HTML : une ligne par jour, créneaux listés
+  const htmlRows = slots.map((s) => {
+    const slotsSpans = s.slots.map((h) => {
+      return "<span style=\"display:inline-block;background:#E1F5EE;color:#0F6E56;padding:4px 10px;border-radius:4px;margin:2px;font-weight:500\">" + h + "</span>";
+    }).join(" ");
+    return "<tr><td style=\"padding:8px 0;border-bottom:1px solid #eee;font-weight:500;width:110px\">" + formatDate(s.date) + "</td><td style=\"padding:8px 0;border-bottom:1px solid #eee\">" + slotsSpans + "</td></tr>";
+  }).join("");
+
+  const html = "<div style=\"font-family:sans-serif;max-width:520px;margin:0 auto\">"
+    + "<h2 style=\"color:#0F6E56;margin-bottom:4px\">Créneau disponible chez Fanny Joly</h2>"
+    + "<p style=\"color:#888;margin-top:0;margin-bottom:20px\">Chiropracteur — Saint-Gildas-Des-Bois</p>"
+    + "<table style=\"width:100%;border-collapse:collapse\">" + htmlRows + "</table>"
+    + "<p style=\"margin-top:24px\">"
+    + "<a href=\"" + BOOK_URL + "\" style=\"background:#1D9E75;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:500\">Réserver sur Abaseo</a>"
+    + "</p></div>";
 
   const body = JSON.stringify({
     from: "monitor@qa-craftlab.com",
     to: emailTo,
-    subject: "🟢 Créneau disponible chez Fanny Joly !",
-    text: "Un créneau est disponible :\n\n" + lines + "\n\n👉 Réserver : " + bookUrl,
-    html: "<h2 style=\"color:#1D9E75\">Créneau disponible chez Fanny Joly !</h2><ul>" + listItems + "</ul><p><a href=\"" + bookUrl + "\" style=\"background:#1D9E75;color:white;padding:10px 20px;text-decoration:none;border-radius:6px\">Réserver maintenant</a></p>",
+    subject: "Créneau dispo chez Fanny Joly — " + slots.map((s) => formatDate(s.date)).join(", "),
+    text: "Créneaux disponibles :\n\n" + lines + "\n\n👉 " + BOOK_URL,
+    html: html,
   });
 
   return new Promise((resolve, reject) => {
@@ -132,25 +167,39 @@ async function sendMail(slots) {
   });
 }
 
+// ─── Main ────────────────────────────────────────────────────────────────────
 (async () => {
-  console.log("[" + new Date().toISOString() + "] Scan sur " + CONFIG.weeksAhead + " semaines...");
+  console.log("[" + new Date().toISOString() + "] Vérification créneaux...");
 
-  const allSlots = [];
+  const now = new Date();
+  const mondayThisWeek = getMondayOf(now);
+  const mondayNextWeek = getMondayOf(new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000));
 
-  for (let w = 0; w < CONFIG.weeksAhead; w++) {
-    const from = getMondayISO(w);
-    console.log("  Semaine +" + w + " (from " + from.substring(0, 10) + ")...");
-    const slots = await checkSlotsForWeek(from);
-    allSlots.push(...slots);
-    if (w < CONFIG.weeksAhead - 1) await new Promise(r => setTimeout(r, 500));
+  // Toujours 2 requêtes : semaine courante + semaine suivante
+  const fromSet = [mondayThisWeek.toISOString()];
+  if (mondayNextWeek.toISOString() !== mondayThisWeek.toISOString()) {
+    fromSet.push(mondayNextWeek.toISOString());
   }
 
-  if (allSlots.length === 0) {
-    console.log("Aucun créneau disponible sur les " + CONFIG.weeksAhead + " prochaines semaines.");
+  const allSlots = [];
+  for (const from of fromSet) {
+    console.log("  Scan semaine du " + formatDate(from) + "...");
+    const slots = await checkSlotsForWeek(from);
+    allSlots.push(...slots);
+    if (fromSet.indexOf(from) < fromSet.length - 1) {
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+
+  // Filtrer sur la fenêtre [aujourd'hui, aujourd'hui + 7j]
+  const filtered = filterWindow(allSlots);
+
+  if (filtered.length === 0) {
+    console.log("Aucun créneau dans les 7 prochains jours.");
     process.exit(0);
   }
 
-  console.log("Créneaux trouvés :", JSON.stringify(allSlots));
-  await sendMail(allSlots);
+  console.log("Créneaux trouvés :", JSON.stringify(filtered));
+  await sendMail(filtered);
   console.log("Notification envoyée !");
 })();

@@ -2,8 +2,8 @@ name: Surveillance créneaux Abaseo
 
 on:
   schedule:
-    # Toutes les 10 min, lun-sam, 8h-19h (heure Paris = UTC+2 en été)
-    - cron: "*/10 6-17 * * 1-6"
+    # Toutes les 5 min, lun-dim, 6h-00h (heure Paris = UTC+2 en été)
+    - cron: "*/5 5-22 * * *"
   workflow_dispatch: # Lancement manuel possible
 
 jobs:
