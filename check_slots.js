@@ -7,8 +7,15 @@ const CONFIG = {
   appointmentTypeId: "01940b23-277d-7107-a963-7b9074d61110",
   nextAction: "40da493497eadff4d1d9243ce4ed01e619b1945b59",
   timezone: "Europe/Paris",
-  weeksAhead: 6, // nombre de semaines à scanner
+  weeksAhead: 6,
 };
+
+const ROUTER_STATE = encodeURIComponent(JSON.stringify(
+  ["", {children: ["fr", {children: ["(abaseo)", {children: ["profession", {children: ["chiropracteur",
+  {children: ["locality", {children: ["44530-saint-gildas-des-bois", {children: ["practitioner",
+  {children: ["fanny-joly", {children: ["__PAGE__", {}, null, null]}, null, null]},
+  null, null]}, null, null]}, null, null]}, null, null]}, null, null]}, null, null]}]}]
+));
 
 function getMondayISO(weeksOffset = 0) {
   const now = new Date();
@@ -22,30 +29,26 @@ function getMondayISO(weeksOffset = 0) {
 
 function checkSlotsForWeek(fromISO) {
   return new Promise((resolve, reject) => {
-    const payload = JSON.stringify([
-      {
-        practitionerId: CONFIG.practitionerId,
-        appointmentTypeId: CONFIG.appointmentTypeId,
-        officeId: CONFIG.officeId,
-        from: fromISO,
-        timezone: CONFIG.timezone,
-      },
-    ]);
+    const payload = JSON.stringify([{
+      practitionerId: CONFIG.practitionerId,
+      appointmentTypeId: CONFIG.appointmentTypeId,
+      officeId: CONFIG.officeId,
+      from: fromISO,
+      timezone: CONFIG.timezone,
+    }]);
 
     const options = {
       hostname: "www.abaseo.fr",
-      path: `/chiropracteur/44530-saint-gildas-des-bois/fanny-joly?officeId=${CONFIG.officeId}`,
+      path: "/chiropracteur/44530-saint-gildas-des-bois/fanny-joly?officeId=" + CONFIG.officeId,
       method: "POST",
       headers: {
         "Content-Type": "text/plain;charset=UTF-8",
         "Content-Length": Buffer.byteLength(payload),
-        Accept: "text/x-component",
+        "Accept": "text/x-component",
         "Next-Action": CONFIG.nextAction,
-        "Next-Router-State-Tree": encodeURIComponent(
-          JSON.stringify(["", { children: ["fr", { children: ["(abaseo)", { children: ["profession", { children: ["chiropracteur", { children: ["locality", { children: ["44530-saint-gildas-des-bois", { children: ["practitioner", { children: ["fanny-joly", { children: ["__PAGE__", {}, null, null] }, null, null] }, null, null] }, null, null] }, null, null] }, null, null] }, null, null] }, null, null] }])
-        ),
-        Origin: "https://www.abaseo.fr",
-        Referer: `https://www.abaseo.fr/chiropracteur/44530-saint-gildas-des-bois/fanny-joly?officeId=${CONFIG.officeId}`,
+        "Next-Router-State-Tree": ROUTER_STATE,
+        "Origin": "https://www.abaseo.fr",
+        "Referer": "https://www.abaseo.fr/chiropracteur/44530-saint-gildas-des-bois/fanny-joly?officeId=" + CONFIG.officeId,
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36",
         "Accept-Language": "fr-FR,fr;q=0.9",
         "Cache-Control": "no-cache",
@@ -95,18 +98,16 @@ async function sendMail(slots) {
     process.exit(1);
   }
 
-  const lines = slots.map((s) => `• ${s.date} : ${s.slots.join(", ")}`).join("\n");
+  const lines = slots.map((s) => "• " + s.date + " : " + s.slots.join(", ")).join("\n");
+  const listItems = slots.map((s) => "<li><strong>" + s.date + "</strong> : " + s.slots.join(", ") + "</li>").join("");
+  const bookUrl = "https://www.abaseo.fr/chiropracteur/44530-saint-gildas-des-bois/fanny-joly?officeId=" + CONFIG.officeId;
 
   const body = JSON.stringify({
     from: "monitor@qa-craftlab.com",
     to: emailTo,
     subject: "🟢 Créneau disponible chez Fanny Joly !",
-    text: `Un créneau est disponible :\n\n${lines}\n\n👉 Réserver : https://www.abaseo.fr/chiropracteur/44530-saint-gildas-des-bois/fanny-joly?officeId=01934e61-5a55-7221-ab1d-1ca5190d2e24`,
-    html: `
-      <h2 style="color:#1D9E75">Créneau disponible chez Fanny Joly !</h2>
-      <ul>${slots.map((s) => `<li><strong>${s.date}</strong> : ${s.slots.join(", ")}</li>`).join("")}</ul>
-      <p><a href="https://www.abaseo.fr/chiropracteur/44530-saint-gildas-des-bois/fanny-joly?officeId=01934e61-5a55-7221-ab1d-1ca5190d2e24" style="background:#1D9E75;color:white;padding:10px 20px;text-decoration:none;border-radius:6px">Réserver maintenant</a></p>
-    `,
+    text: "Un créneau est disponible :\n\n" + lines + "\n\n👉 Réserver : " + bookUrl,
+    html: "<h2 style=\"color:#1D9E75\">Créneau disponible chez Fanny Joly !</h2><ul>" + listItems + "</ul><p><a href=\"" + bookUrl + "\" style=\"background:#1D9E75;color:white;padding:10px 20px;text-decoration:none;border-radius:6px\">Réserver maintenant</a></p>",
   });
 
   return new Promise((resolve, reject) => {
@@ -115,7 +116,7 @@ async function sendMail(slots) {
       path: "/emails",
       method: "POST",
       headers: {
-        Authorization: `Bearer ${resendKey}`,
+        "Authorization": "Bearer " + resendKey,
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(body),
       },
@@ -131,23 +132,21 @@ async function sendMail(slots) {
   });
 }
 
-// ─── Main ────────────────────────────────────────────────────────────────────
 (async () => {
-  console.log(`[${new Date().toISOString()}] Scan sur ${CONFIG.weeksAhead} semaines...`);
+  console.log("[" + new Date().toISOString() + "] Scan sur " + CONFIG.weeksAhead + " semaines...");
 
   const allSlots = [];
 
   for (let w = 0; w < CONFIG.weeksAhead; w++) {
     const from = getMondayISO(w);
-    console.log(`  Semaine +${w} (from ${from.substring(0, 10)})...`);
+    console.log("  Semaine +" + w + " (from " + from.substring(0, 10) + ")...");
     const slots = await checkSlotsForWeek(from);
     allSlots.push(...slots);
-    // Pause 500ms entre les requêtes pour ne pas surcharger
     if (w < CONFIG.weeksAhead - 1) await new Promise(r => setTimeout(r, 500));
   }
 
   if (allSlots.length === 0) {
-    console.log(`Aucun créneau disponible sur les ${CONFIG.weeksAhead} prochaines semaines.`);
+    console.log("Aucun créneau disponible sur les " + CONFIG.weeksAhead + " prochaines semaines.");
     process.exit(0);
   }
 
