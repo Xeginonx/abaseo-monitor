@@ -1,4 +1,4 @@
-// check_slots.js — Vérifie les créneaux Abaseo et envoie un mail si dispo
+// check_slots.js — Vérifie les créneaux Abaseo (semaines à venir) et envoie un mail si dispo
 const https = require("https");
 
 const CONFIG = {
@@ -7,27 +7,27 @@ const CONFIG = {
   appointmentTypeId: "01940b23-277d-7107-a963-7b9074d61110",
   nextAction: "40da493497eadff4d1d9243ce4ed01e619b1945b59",
   timezone: "Europe/Paris",
+  weeksAhead: 6, // nombre de semaines à scanner
 };
 
-// Calcule le lundi de la semaine courante en UTC ISO
-function getMondayISO() {
+function getMondayISO(weeksOffset = 0) {
   const now = new Date();
-  const day = now.getDay(); // 0=dim, 1=lun...
+  const day = now.getDay();
   const diff = day === 0 ? -6 : 1 - day;
   const monday = new Date(now);
-  monday.setDate(now.getDate() + diff);
+  monday.setDate(now.getDate() + diff + weeksOffset * 7);
   monday.setUTCHours(0, 0, 0, 0);
   return monday.toISOString();
 }
 
-function checkSlots() {
+function checkSlotsForWeek(fromISO) {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify([
       {
         practitionerId: CONFIG.practitionerId,
         appointmentTypeId: CONFIG.appointmentTypeId,
         officeId: CONFIG.officeId,
-        from: getMondayISO(),
+        from: fromISO,
         timezone: CONFIG.timezone,
       },
     ]);
@@ -42,7 +42,7 @@ function checkSlots() {
         Accept: "text/x-component",
         "Next-Action": CONFIG.nextAction,
         "Next-Router-State-Tree": encodeURIComponent(
-          JSON.stringify(["", { children: ["fr", { children: ["(abaseo)", { children: ["profession", { children: ["chiropracteur", { children: ["locality", { children: ["44530-saint-gildas-des-bois", { children: ["practitioner", { children: ["fanny-joly", { children: ["__PAGE__", {}, null, null], }, null, null], }, null, null], }, null, null], }, null, null], }, null, null], }, null, null], }, null, null], }, null, null] }])
+          JSON.stringify(["", { children: ["fr", { children: ["(abaseo)", { children: ["profession", { children: ["chiropracteur", { children: ["locality", { children: ["44530-saint-gildas-des-bois", { children: ["practitioner", { children: ["fanny-joly", { children: ["__PAGE__", {}, null, null] }, null, null] }, null, null] }, null, null] }, null, null] }, null, null] }, null, null] }, null, null] }])
         ),
         Origin: "https://www.abaseo.fr",
         Referer: `https://www.abaseo.fr/chiropracteur/44530-saint-gildas-des-bois/fanny-joly?officeId=${CONFIG.officeId}`,
@@ -56,37 +56,30 @@ function checkSlots() {
     const req = https.request(options, (res) => {
       res.on("data", (chunk) => (data += chunk));
       res.on("end", () => {
-        // Parser le format RSC : ligne commençant par "1:"
         const match = data.match(/^1:(\{.+\})/m);
         if (!match) {
-          console.log("Réponse inattendue :", data.substring(0, 300));
+          console.log("Réponse inattendue :", data.substring(0, 200));
           return resolve([]);
         }
-
         try {
-          // Nettoyer les dates RSC "$D..."
           const cleaned = match[1].replace(/"\$D/g, '"');
           const parsed = JSON.parse(cleaned);
           const available = [];
-
           for (const day of parsed.availabilities || []) {
             if (day.slots && day.slots.length > 0) {
               const dateStr = new Date(day.date).toLocaleDateString("fr-FR", {
-                weekday: "long",
-                day: "numeric",
-                month: "long",
+                weekday: "long", day: "numeric", month: "long",
               });
               available.push({ date: dateStr, slots: day.slots });
             }
           }
           resolve(available);
         } catch (e) {
-          console.error("Erreur parsing JSON :", e.message);
+          console.error("Erreur parsing :", e.message);
           resolve([]);
         }
       });
     });
-
     req.on("error", reject);
     req.write(payload);
     req.end();
@@ -94,8 +87,6 @@ function checkSlots() {
 }
 
 async function sendMail(slots) {
-  // Utilise l'API Gmail via nodemailer + SMTP ou directement l'API Resend (gratuit)
-  // On utilise Resend ici : https://resend.com (100 mails/jour gratuit, zéro config)
   const emailTo = process.env.NOTIFY_EMAIL;
   const resendKey = process.env.RESEND_API_KEY;
 
@@ -104,15 +95,13 @@ async function sendMail(slots) {
     process.exit(1);
   }
 
-  const lines = slots
-    .map((s) => `• ${s.date} : ${s.slots.join(", ")}`)
-    .join("\n");
+  const lines = slots.map((s) => `• ${s.date} : ${s.slots.join(", ")}`).join("\n");
 
   const body = JSON.stringify({
-    from: "abaseo-monitor@resend.dev",
+    from: "monitor@qa-craftlab.com",
     to: emailTo,
     subject: "🟢 Créneau disponible chez Fanny Joly !",
-    text: `Un ou plusieurs créneaux viennent de se libérer cette semaine :\n\n${lines}\n\n👉 Réserver : https://www.abaseo.fr/chiropracteur/44530-saint-gildas-des-bois/fanny-joly?officeId=01934e61-5a55-7221-ab1d-1ca5190d2e24`,
+    text: `Un créneau est disponible :\n\n${lines}\n\n👉 Réserver : https://www.abaseo.fr/chiropracteur/44530-saint-gildas-des-bois/fanny-joly?officeId=01934e61-5a55-7221-ab1d-1ca5190d2e24`,
     html: `
       <h2 style="color:#1D9E75">Créneau disponible chez Fanny Joly !</h2>
       <ul>${slots.map((s) => `<li><strong>${s.date}</strong> : ${s.slots.join(", ")}</li>`).join("")}</ul>
@@ -131,14 +120,10 @@ async function sendMail(slots) {
         "Content-Length": Buffer.byteLength(body),
       },
     };
-
     const req = https.request(options, (res) => {
       let d = "";
       res.on("data", (c) => (d += c));
-      res.on("end", () => {
-        console.log("Mail envoyé :", d);
-        resolve();
-      });
+      res.on("end", () => { console.log("Mail envoyé :", d); resolve(); });
     });
     req.on("error", reject);
     req.write(body);
@@ -146,19 +131,27 @@ async function sendMail(slots) {
   });
 }
 
-// ─── Main ───────────────────────────────────────────────────────────────────
+// ─── Main ────────────────────────────────────────────────────────────────────
 (async () => {
-  console.log(`[${new Date().toISOString()}] Vérification des créneaux...`);
+  console.log(`[${new Date().toISOString()}] Scan sur ${CONFIG.weeksAhead} semaines...`);
 
-  const slots = await checkSlots();
+  const allSlots = [];
 
-if (slots.length === 0) {
-    // TEST : forcer un faux créneau
-    await sendMail([{ date: "vendredi 6 juin", slots: ["10:00", "14:30"] }]);
+  for (let w = 0; w < CONFIG.weeksAhead; w++) {
+    const from = getMondayISO(w);
+    console.log(`  Semaine +${w} (from ${from.substring(0, 10)})...`);
+    const slots = await checkSlotsForWeek(from);
+    allSlots.push(...slots);
+    // Pause 500ms entre les requêtes pour ne pas surcharger
+    if (w < CONFIG.weeksAhead - 1) await new Promise(r => setTimeout(r, 500));
+  }
+
+  if (allSlots.length === 0) {
+    console.log(`Aucun créneau disponible sur les ${CONFIG.weeksAhead} prochaines semaines.`);
     process.exit(0);
-}
+  }
 
-  console.log("Créneaux trouvés :", JSON.stringify(slots));
-  await sendMail(slots);
+  console.log("Créneaux trouvés :", JSON.stringify(allSlots));
+  await sendMail(allSlots);
   console.log("Notification envoyée !");
 })();
