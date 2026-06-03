@@ -152,10 +152,11 @@ async function sendMail(slots) {
 
   const slots = await checkSlots();
 
-  if (slots.length === 0) {
-    console.log("Aucun créneau disponible cette semaine.");
+if (slots.length === 0) {
+    // TEST : forcer un faux créneau
+    await sendMail([{ date: "vendredi 6 juin", slots: ["10:00", "14:30"] }]);
     process.exit(0);
-  }
+}
 
   console.log("Créneaux trouvés :", JSON.stringify(slots));
   await sendMail(slots);
